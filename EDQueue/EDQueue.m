@@ -30,6 +30,7 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
 @property (readwrite) Boolean isRunning;
 @property (readwrite) Boolean isActive;
 @property (readwrite) NSString *activeTask;
+@property UIBackgroundTaskIdentifier backgroundTask;
 @end
 
 //
@@ -53,6 +54,7 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
         _isRunning  = false;
         _isActive   = false;
         _retryLimit = 4;
+        _backgroundTask = UIBackgroundTaskInvalid;
     }
     return self;
 }
@@ -157,6 +159,23 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
 
 #pragma mark - Private methods
 
+- (void)beginBackgroundTask
+{
+    if (self.backgroundTask == UIBackgroundTaskInvalid && [[UIDevice currentDevice] isMultitaskingSupported]) {
+        self.backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+            [self endBackgroundTask];
+        }];
+    }
+}
+
+- (void)endBackgroundTask
+{
+    if (self.backgroundTask != UIBackgroundTaskInvalid && [[UIDevice currentDevice] isMultitaskingSupported]) {
+        [[UIApplication sharedApplication] endBackgroundTask:self.backgroundTask];
+        self.backgroundTask = UIBackgroundTaskInvalid;
+    }
+}
+
 /**
  * Checks the queue for available jobs, sends them to the processor delegate, and then handles the response.
  *
@@ -167,6 +186,9 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
     dispatch_queue_t gcd = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0);
     dispatch_async(gcd, ^{
         if (self.isRunning && !self.isActive && [self.engine fetchJobCount] > 0) {
+            // Begin background task if not already done
+            [self beginBackgroundTask];
+            
             // Start job
             self.isActive = true;
             id job = [self.engine fetchJob];
@@ -183,6 +205,11 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
                 [self processJob:job withResult:result];
                 self.activeTask = nil;
             }
+        }
+        
+        // End background task if queue is no longer running
+        if (!self.isRunning) {
+            [self endBackgroundTask];
         }
     });
 }
@@ -217,6 +244,8 @@ NSString *const EDQueueDidDrain = @"EDQueueDidDrain";
     // Drain
     if ([self.engine fetchJobCount] == 0) {
         [self performSelectorOnMainThread:@selector(postNotification:) withObject:[NSDictionary dictionaryWithObjectsAndKeys:EDQueueDidDrain, @"name", nil, @"data", nil] waitUntilDone:false];
+        // End background task if queue is drained
+        [self endBackgroundTask];
     } else {
         [self performSelectorOnMainThread:@selector(tick) withObject:nil waitUntilDone:false];
     }
